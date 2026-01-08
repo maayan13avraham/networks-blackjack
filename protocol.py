@@ -1,5 +1,13 @@
 # protocol.py
 import struct
+import socket
+def get_preferred_ip() -> str:
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("8.8.8.8", 80))
+        return s.getsockname()[0]
+    finally:
+        s.close()
 
 MAGIC_COOKIE = 0xabcddcba
 MSG_TYPE_OFFER = 0x2
@@ -41,4 +49,34 @@ def unpack_offer(data: bytes):
         raise ValueError("Not an offer packet")
     return port, decode_fixed_name(name_raw)
 
+MSG_TYPE_REQUEST = 0x3
+
+
+
+
+
+# Request format:
+# magic (4) | type (1) | num_rounds (1) | client name (32)
+REQUEST_STRUCT = struct.Struct("!IBB32s")  # I=4, B=1, B=1, 32s=32
+
+
+def pack_request(num_rounds: int, client_name: str) -> bytes:
+    if not (1 <= num_rounds <= 255):
+        raise ValueError("num_rounds must be in 1..255")
+    name_bytes = encode_fixed_name(client_name, 32)
+    return REQUEST_STRUCT.pack(MAGIC_COOKIE, MSG_TYPE_REQUEST, num_rounds, name_bytes)
+
+
+def unpack_request(data: bytes):
+    """Returns (num_rounds, client_name) or raises ValueError."""
+    if len(data) != REQUEST_STRUCT.size:
+        raise ValueError(f"Bad request length: {len(data)} != {REQUEST_STRUCT.size}")
+    cookie, mtype, num_rounds, name_raw = REQUEST_STRUCT.unpack(data)
+    if cookie != MAGIC_COOKIE:
+        raise ValueError("Bad magic cookie")
+    if mtype != MSG_TYPE_REQUEST:
+        raise ValueError("Not a request packet")
+    if num_rounds == 0:
+        raise ValueError("num_rounds cannot be 0")
+    return num_rounds, decode_fixed_name(name_raw)
 
