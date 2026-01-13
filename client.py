@@ -138,7 +138,7 @@ def play_session(server_ip: str, tcp_port: int, num_rounds: int):
                             if total > 21:
                                 # After bust, server sends final result
                                 msg = recv_exact(tcp, 9)
-                                end_res, _, _ = unpack_payload_server(msg
+                                end_res, _, _ = unpack_payload_server(msg)
                                 print("Round finished:", result_text(end_res))
                                 if end_res == RES_WIN:
                                     wins += 1

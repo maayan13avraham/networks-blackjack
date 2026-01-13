@@ -17,7 +17,7 @@ from protocol import (
     pack_offer, unpack_request, OFFER_UDP_PORT,
     pack_payload_server, recv_exact, unpack_payload_client,
     DECISION_HIT, DECISION_STAND,
-    RES_NOT_OVER, RES_WIN, RES_LOSS , RES_TIE
+    RES_NOT_OVER, RES_WIN, RES_LOSS, RES_TIE
 )
 import random
 
