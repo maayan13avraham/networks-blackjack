@@ -1,4 +1,13 @@
+# =========================
 # server.py
+# =========================
+# Blackjack game server for the networking hackathon.
+# Responsibilities:
+# - Broadcast UDP offer messages
+# - Accept TCP client connections
+# - Run multiple blackjack rounds per client
+# - Handle multiple clients concurrently using threads
+# - Use timeouts to avoid hanging connections
 import socket
 import threading
 import time
@@ -13,7 +22,16 @@ from protocol import (
 import random
 
 TEAM_NAME = "NoSocketsJustCards_v2"
+
+# =========================
+# Blackjack utility functions
+# =========================
 def card_points(rank: int) -> int:
+    """
+        Returns the blackjack value of a card rank.
+        Ace counts as 11 initially.
+        Face cards count as 10.
+        """
     if rank == 1:
         return 11
     if rank >= 11:
@@ -21,6 +39,10 @@ def card_points(rank: int) -> int:
     return rank
 
 def hand_value(ranks: List[int]) -> int:
+    """
+        Computes the blackjack value of a hand,
+        adjusting Aces from 11 to 1 if needed.
+        """
     total = sum(card_points(r) for r in ranks)
     aces = sum(1 for r in ranks if r == 1)
     while total > 21 and aces > 0:
@@ -29,15 +51,28 @@ def hand_value(ranks: List[int]) -> int:
     return total
 
 def fresh_deck() -> List[Tuple[int, int]]:
+    """
+        Creates and shuffles a fresh standard deck.
+        Each card is (rank, suit).
+        """
     deck = [(rank, suit) for suit in range(4) for rank in range(1, 14)]
     random.shuffle(deck)
     return deck
 
 def draw_from_deck(deck: List[Tuple[int, int]]) -> Tuple[int, int]:
-    # Deck is guaranteed non-empty for this assignment sizes
+    """
+        Draws one card from the deck.
+        Deck is guaranteed non-empty for this assignment.
+        """
     return deck.pop()
 
+# =========================
+# Network utilities
+# =========================
 def get_local_ip() -> str:
+    """
+        Returns the local IP address used for outgoing connections.
+        """
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         s.connect(("8.8.8.8", 80))
@@ -47,35 +82,46 @@ def get_local_ip() -> str:
     finally:
         s.close()
 
+# =========================
+# Game helpers
+# =========================
 def send_final_result(conn: socket.socket, result_code: int):
-    # Payload requires a valid rank/suit. We send a dummy card (Ace of Hearts).
+    """
+        Sends the final round result to the client.
+        Protocol requires a valid card, so a dummy card is sent.
+        """
     conn.sendall(pack_payload_server(result_code, 1, 0))
 
+# =========================
+# Single round logic
+# =========================
 def play_one_round(conn: socket.socket) -> int:
     """
-    Plays a single blackjack round.
-    Returns one of RES_WIN/RES_LOSS/RES_TIE.
+    Plays a single blackjack round with the client.
+    Returns:
+        RES_WIN, RES_LOSS, or RES_TIE
     """
     deck = fresh_deck()
 
     player_cards: List[Tuple[int, int]] = []
     dealer_cards: List[Tuple[int, int]] = []
 
-    # 1) Initial deal: player gets 2 face-up
+    # ---- Initial deal: player gets 2 cards ----
     for _ in range(2):
         r, s = draw_from_deck(deck)
         player_cards.append((r, s))
         conn.sendall(pack_payload_server(RES_NOT_OVER, r, s))
 
-    # Dealer gets 2, but client sees only the first now
+    # ---- Dealer upcard ----
     up_r, up_s = draw_from_deck(deck)
     dealer_cards.append((up_r, up_s))
     conn.sendall(pack_payload_server(RES_NOT_OVER, up_r, up_s))  # dealer upcard
 
+    # ---- Dealer hidden card ----
     hidden_r, hidden_s = draw_from_deck(deck)
     dealer_cards.append((hidden_r, hidden_s))  # not sent yet
 
-    # 2) Player turn
+    # ---- Player turn ----
     while True:
         p_total = hand_value([r for (r, _) in player_cards])
         if p_total > 21:
@@ -94,11 +140,11 @@ def play_one_round(conn: socket.socket) -> int:
             conn.sendall(pack_payload_server(RES_NOT_OVER, r, s))
             # loop continues; bust handled at top
 
-    # 3) Dealer turn (only if player didn't bust):
-    # Reveal hidden card first
+    # ---- Dealer turn ----
+    # Reveal hidden card
     conn.sendall(pack_payload_server(RES_NOT_OVER, hidden_r, hidden_s))
 
-    # Dealer draws until total >= 17 or bust
+    # Dealer hits until total >= 17
     while True:
         d_total = hand_value([r for (r, _) in dealer_cards])
         if d_total >= 17:
@@ -107,7 +153,7 @@ def play_one_round(conn: socket.socket) -> int:
         dealer_cards.append((r, s))
         conn.sendall(pack_payload_server(RES_NOT_OVER, r, s))
 
-    # 4) Decide winner
+    # ---- Decide outcome ----
     p_total = hand_value([r for (r, _) in player_cards])
     d_total = hand_value([r for (r, _) in dealer_cards])
 
@@ -124,15 +170,24 @@ def play_one_round(conn: socket.socket) -> int:
     send_final_result(conn, RES_TIE)
     return RES_TIE
 
+# =========================
+# Client handler (per thread)
+# =========================
 def handle_client(conn: socket.socket, addr):
+    """
+        Handles a single TCP client connection.
+        Runs in its own thread.
+        """
     try:
+        # Prevent hanging forever if client disappears
         conn.settimeout(10.0)
-        # Read exactly one request (38 bytes)
+
+        # Receive request message
         req = recv_exact(conn, 38)
         num_rounds, client_name = unpack_request(req)
         print(f"[TCP] Client {client_name} from {addr[0]}:{addr[1]} requested {num_rounds} rounds")
 
-        # Optional simple ACK (client prints it but doesn't parse)
+        # Optional ACK
         conn.sendall(b"OK")
 
         wins = losses = ties = 0
@@ -159,6 +214,10 @@ def handle_client(conn: socket.socket, addr):
         except OSError:
             pass
 
+
+# =========================
+# Server main loop
+# =========================
 def main():
     print("### RUNNING SERVER.PY STAGE 2 ###")
 
@@ -167,7 +226,7 @@ def main():
 
     print(f"Server started, listening on IP address {ip}")
 
-    # ---- TCP socket ----
+    # ---- TCP socket (for game sessions) ----
     tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     tcp.bind((WIFI_IP, 0))
 
@@ -176,7 +235,7 @@ def main():
 
     print(f"Server started, listening on IP address {ip} (TCP port {server_tcp_port})")
 
-    # ---- UDP broadcaster ----
+    # ---- UDP socket (for offers) ----
     udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
     udp.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
 
@@ -187,14 +246,14 @@ def main():
     last_offer_time = 0.0
     while True:
         try:
-            # 1) לשדר offer פעם בשנייה
+            # Broadcast offer once per second
             now = time.time()
             if now - last_offer_time >= 1.0:
                 udp.sendto(offer, dest)
                 print(f"[UDP] Sent offer (tcp_port={server_tcp_port}, name={TEAM_NAME})")
                 last_offer_time = now
 
-            # 2) לקבל TCP בלי להיתקע: נשים timeout קצר
+            # Accept TCP connections without blocking
             tcp.settimeout(0.2)
             try:
                 conn, addr = tcp.accept()
