@@ -126,6 +126,7 @@ def play_one_round(conn: socket.socket) -> int:
 
 def handle_client(conn: socket.socket, addr):
     try:
+        conn.settimeout(10.0)
         # Read exactly one request (38 bytes)
         req = recv_exact(conn, 38)
         num_rounds, client_name = unpack_request(req)
@@ -146,6 +147,9 @@ def handle_client(conn: socket.socket, addr):
                 ties += 1
 
         print(f"[TCP] Finished with {client_name}: wins={wins}, losses={losses}, ties={ties}")
+
+    except socket.timeout:
+        print(f"[TCP] Timeout with {addr}: client not responding. Closing connection.")
 
     except Exception as e:
         print(f"[TCP] Error with {addr}: {e}")

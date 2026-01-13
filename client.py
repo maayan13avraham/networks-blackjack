@@ -49,121 +49,147 @@ def play_session(server_ip: str, tcp_port: int, num_rounds: int):
     tcp.settimeout(3.0)
     try:
         tcp.connect((server_ip, tcp_port))
-        tcp.settimeout(None)
 
-        # Send request (fixed 38 bytes)
-        tcp.sendall(pack_request(num_rounds, TEAM_NAME))
+        # Keep a timeout during the whole session so recv_exact won't block forever
+        tcp.settimeout(8.0)
 
-        resp = tcp.recv(64)
-        print(f"[TCP] Server response: {resp!r}")
+        try:
+            # Send request (fixed 38 bytes)
+            tcp.sendall(pack_request(num_rounds, TEAM_NAME))
 
-        wins = losses = ties = 0
+            resp = tcp.recv(64)
+            print(f"[TCP] Server response: {resp!r}")
 
-        for round_i in range(1, num_rounds + 1):
-            print(f"\n=== Round {round_i}/{num_rounds} ===")
+            wins = losses = ties = 0
 
-            player_ranks: list[int] = []
-            dealer_ranks: list[int] = []
+            for round_i in range(1, num_rounds + 1):
+                print(f"\n=== Round {round_i}/{num_rounds} ===")
 
-            # Receive 2 player cards
-            for i in range(2):
+                player_ranks: list[int] = []
+                dealer_ranks: list[int] = []
+
+                # Receive 2 player cards
+                for i in range(2):
+                    msg = recv_exact(tcp, 9)
+                    result, rank, suit = unpack_payload_server(msg)
+                    if result != RES_NOT_OVER:
+                        # Unexpected but handle gracefully
+                        print("Round ended unexpectedly:", result_text(result))
+                        break
+                    player_ranks.append(rank)
+                    print(f"Player card {i+1}: rank={rank}, suit={suit} | total={hand_value(player_ranks)}")
+
+                # Receive dealer upcard (1 visible)
                 msg = recv_exact(tcp, 9)
                 result, rank, suit = unpack_payload_server(msg)
                 if result != RES_NOT_OVER:
-                    # Unexpected but handle gracefully
                     print("Round ended unexpectedly:", result_text(result))
-                    break
-                player_ranks.append(rank)
-                print(f"Player card {i+1}: rank={rank}, suit={suit} | total={hand_value(player_ranks)}")
+                    # consume round end and continue
+                    if result == RES_WIN:
+                        wins += 1
+                    elif result == RES_LOSS:
+                        losses += 1
+                    else:
+                        ties += 1
+                    continue
 
-            # Receive dealer upcard (1 visible)
-            msg = recv_exact(tcp, 9)
-            result, rank, suit = unpack_payload_server(msg)
-            if result != RES_NOT_OVER:
-                print("Round ended unexpectedly:", result_text(result))
-                # consume round end and continue
-                if result == RES_WIN: wins += 1
-                elif result == RES_LOSS: losses += 1
-                else: ties += 1
-                continue
+                dealer_ranks.append(rank)
+                print(f"Dealer shows: rank={rank}, suit={suit} | visible_total={hand_value(dealer_ranks)}")
 
-            dealer_ranks.append(rank)
-            print(f"Dealer shows: rank={rank}, suit={suit} | visible_total={hand_value(dealer_ranks)}")
+                # Player turn
+                while True:
+                    total = hand_value(player_ranks)
+                    if total > 21:
+                        # should not happen here usually, but just in case
+                        print("Player BUST (local). Waiting for server result...")
+                        msg = recv_exact(tcp, 9)
+                        end_res, _, _ = unpack_payload_server(msg)
+                        print("Round finished:", result_text(end_res))
+                        if end_res == RES_WIN:
+                            wins += 1
+                        elif end_res == RES_LOSS:
+                            losses += 1
+                        else:
+                            ties += 1
+                        break
 
-            # Player turn
-            while True:
-                total = hand_value(player_ranks)
-                if total > 21:
-                    # should not happen here usually, but just in case
-                    print("Player BUST (local). Waiting for server result...")
-                    msg = recv_exact(tcp, 9)
-                    end_res, _, _ = unpack_payload_server(msg)
-                    print("Round finished:", result_text(end_res))
-                    if end_res == RES_WIN: wins += 1
-                    elif end_res == RES_LOSS: losses += 1
-                    else: ties += 1
-                    break
-
-                choice = input("Hit or Stand? [h/s]: ").strip().lower()
-                if choice.startswith("h"):
-                    tcp.sendall(pack_payload_client(DECISION_HIT))
-
-                    msg = recv_exact(tcp, 9)
-                    res, rank, suit = unpack_payload_server(msg)
-
-                    if res == RES_NOT_OVER:
-                        player_ranks.append(rank)
-                        total = hand_value(player_ranks)
-                        print(f"Player got: rank={rank}, suit={suit} | total={total}")
-
-                        if total > 21:
-                            # After bust, server sends final result
-                            msg = recv_exact(tcp, 9)
-                            end_res, _, _ = unpack_payload_server(msg)
-                            print("Round finished:", result_text(end_res))
-                            if end_res == RES_WIN: wins += 1
-                            elif end_res == RES_LOSS: losses += 1
-                            else: ties += 1
-                            break
-
+                    choice = input("Hit or Stand? [h/s]: ").strip().lower()
+                    if choice not in ['h', 's']:
+                        print("Invalid input, please type 'h' or 's'")
                         continue
 
-                    # If server ended round immediately
-                    print("Round finished:", result_text(res))
-                    if res == RES_WIN: wins += 1
-                    elif res == RES_LOSS: losses += 1
-                    else: ties += 1
-                    break
+                    if choice.startswith("h"):
+                        tcp.sendall(pack_payload_client(DECISION_HIT))
 
-                else:
-                    # Stand
-                    tcp.sendall(pack_payload_client(DECISION_STAND))
-
-                    # Now server will:
-                    # reveal hidden dealer card + dealer hits (all with RES_NOT_OVER),
-                    # then send final result (RES_WIN/RES_LOSS/RES_TIE) with dummy card.
-                    while True:
                         msg = recv_exact(tcp, 9)
                         res, rank, suit = unpack_payload_server(msg)
 
                         if res == RES_NOT_OVER:
-                            dealer_ranks.append(rank)
-                            print(f"Dealer got/revealed: rank={rank}, suit={suit} | dealer_total={hand_value(dealer_ranks)}")
+                            player_ranks.append(rank)
+                            total = hand_value(player_ranks)
+                            print(f"Player got: rank={rank}, suit={suit} | total={total}")
+
+                            if total > 21:
+                                # After bust, server sends final result
+                                msg = recv_exact(tcp, 9)
+                                end_res, _, _ = unpack_payload_server(msg)
+                                print("Round finished:", result_text(end_res))
+                                if end_res == RES_WIN:
+                                    wins += 1
+                                elif end_res == RES_LOSS:
+                                    losses += 1
+                                else:
+                                    ties += 1
+                                break
+
                             continue
 
-                        print(f"Final dealer total = {hand_value(dealer_ranks)}")
+                        # If server ended round immediately
                         print("Round finished:", result_text(res))
-                        if res == RES_WIN: wins += 1
-                        elif res == RES_LOSS: losses += 1
-                        else: ties += 1
+                        if res == RES_WIN:
+                            wins += 1
+                        elif res == RES_LOSS:
+                            losses += 1
+                        else:
+                            ties += 1
                         break
 
-                    break
+                    else:
+                        # Stand
+                        tcp.sendall(pack_payload_client(DECISION_STAND))
 
-        played = wins + losses + ties
-        win_rate = (wins / played) if played else 0.0
-        print(f"\nFinished playing {played} rounds, win rate: {win_rate:.2%}")
-        print(f"Stats: wins={wins}, losses={losses}, ties={ties}")
+                        # Now server will:
+                        # reveal hidden dealer card + dealer hits (all with RES_NOT_OVER),
+                        # then send final result (RES_WIN/RES_LOSS/RES_TIE) with dummy card.
+                        while True:
+                            msg = recv_exact(tcp, 9)
+                            res, rank, suit = unpack_payload_server(msg)
+
+                            if res == RES_NOT_OVER:
+                                dealer_ranks.append(rank)
+                                print(f"Dealer got/revealed: rank={rank}, suit={suit} | dealer_total={hand_value(dealer_ranks)}")
+                                continue
+
+                            print(f"Final dealer total = {hand_value(dealer_ranks)}")
+                            print("Round finished:", result_text(res))
+                            if res == RES_WIN:
+                                wins += 1
+                            elif res == RES_LOSS:
+                                losses += 1
+                            else:
+                                ties += 1
+                            break
+
+                        break
+
+            played = wins + losses + ties
+            win_rate = (wins / played) if played else 0.0
+            print(f"\nFinished playing {played} rounds, win rate: {win_rate:.2%}")
+            print(f"Stats: wins={wins}, losses={losses}, ties={ties}")
+
+        except socket.timeout:
+            print("[TCP] Timeout: no response from server. Closing session and returning to offers...")
+            return
 
     finally:
         try:
