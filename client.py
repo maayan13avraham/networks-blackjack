@@ -1,4 +1,4 @@
-# client.py
+
 import socket
 from protocol import (
     unpack_offer, pack_request, OFFER_UDP_PORT, get_preferred_ip, recv_exact,
@@ -10,6 +10,7 @@ from protocol import (
 
 TEAM_NAME = "NoSocketsJustCards_v2"
 
+# Maps card ranks (1-13) to Blackjack game values: Ace=11, Face cards=10
 def card_points(rank: int) -> int:
     if rank == 1:
         return 11
@@ -17,6 +18,8 @@ def card_points(rank: int) -> int:
         return 10
     return rank
 
+# Calculates total hand value
+# automatically adjusting Aces from 11 to 1 if the sum exceeds 21
 def hand_value(ranks: list[int]) -> int:
     total = sum(card_points(r) for r in ranks)
     aces = sum(1 for r in ranks if r == 1)
@@ -25,6 +28,7 @@ def hand_value(ranks: list[int]) -> int:
         aces -= 1
     return total
 
+# convert numeric result codes to readable strings for the UI
 def result_text(code: int) -> str:
     return {
         RES_NOT_OVER: "NOT_OVER",
@@ -33,6 +37,7 @@ def result_text(code: int) -> str:
         RES_WIN: "WIN",
     }.get(code, f"UNKNOWN({code})")
 
+# Validates user input to ensure it is a number between 1 and 255
 def ask_rounds() -> int:
     while True:
         rounds_str = input("How many rounds do you want to play? (1-255): ").strip()
@@ -46,17 +51,19 @@ def ask_rounds() -> int:
 
 def play_session(server_ip: str, tcp_port: int, num_rounds: int):
     tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    # Initial connection timeout
     tcp.settimeout(3.0)
     try:
         tcp.connect((server_ip, tcp_port))
 
-        # Keep a timeout during the whole session so recv_exact won't block forever
+        # Prevents blocking indefinitely if the server hangs
         tcp.settimeout(8.0)
 
         try:
-            # Send request (fixed 38 bytes)
+            # Send binary Request message over TCP
             tcp.sendall(pack_request(num_rounds, TEAM_NAME))
 
+            # Basic server acknowledgment
             resp = tcp.recv(64)
             print(f"[TCP] Server response: {resp!r}")
 
@@ -68,18 +75,17 @@ def play_session(server_ip: str, tcp_port: int, num_rounds: int):
                 player_ranks: list[int] = []
                 dealer_ranks: list[int] = []
 
-                # Receive 2 player cards
+                # INITIAL DEAL: Receive 2 player cards face-up
                 for i in range(2):
                     msg = recv_exact(tcp, 9)
                     result, rank, suit = unpack_payload_server(msg)
                     if result != RES_NOT_OVER:
-                        # Unexpected but handle gracefully
                         print("Round ended unexpectedly:", result_text(result))
                         break
                     player_ranks.append(rank)
                     print(f"Player card {i+1}: rank={rank}, suit={suit} | total={hand_value(player_ranks)}")
 
-                # Receive dealer upcard (1 visible)
+                # INITIAL DEAL: Receive dealer's first visible card
                 msg = recv_exact(tcp, 9)
                 result, rank, suit = unpack_payload_server(msg)
                 if result != RES_NOT_OVER:
@@ -96,11 +102,11 @@ def play_session(server_ip: str, tcp_port: int, num_rounds: int):
                 dealer_ranks.append(rank)
                 print(f"Dealer shows: rank={rank}, suit={suit} | visible_total={hand_value(dealer_ranks)}")
 
-                # Player turn
+                # PLAYER TURN: Loop until player Stands or Busts
                 while True:
                     total = hand_value(player_ranks)
+                    # Local check for player bust
                     if total > 21:
-                        # should not happen here usually, but just in case
                         print("Player BUST (local). Waiting for server result...")
                         msg = recv_exact(tcp, 9)
                         end_res, _, _ = unpack_payload_server(msg)
@@ -117,7 +123,7 @@ def play_session(server_ip: str, tcp_port: int, num_rounds: int):
                     if choice not in ['h', 's']:
                         print("Invalid input, please type 'h' or 's'")
                         continue
-
+                    # Send "Hittt"
                     if choice.startswith("h"):
                         tcp.sendall(pack_payload_client(DECISION_HIT))
 
@@ -128,11 +134,11 @@ def play_session(server_ip: str, tcp_port: int, num_rounds: int):
                             player_ranks.append(rank)
                             total = hand_value(player_ranks)
                             print(f"Player got: rank={rank}, suit={suit} | total={total}")
-
+                            # Check for bust after Hit
                             if total > 21:
                                 # After bust, server sends final result
                                 msg = recv_exact(tcp, 9)
-                                end_res, _, _ = unpack_payload_server(msg)
+                                end_res, _, _ = unpack_payload_server(msg
                                 print("Round finished:", result_text(end_res))
                                 if end_res == RES_WIN:
                                     wins += 1
@@ -158,9 +164,7 @@ def play_session(server_ip: str, tcp_port: int, num_rounds: int):
                         # Stand
                         tcp.sendall(pack_payload_client(DECISION_STAND))
 
-                        # Now server will:
-                        # reveal hidden dealer card + dealer hits (all with RES_NOT_OVER),
-                        # then send final result (RES_WIN/RES_LOSS/RES_TIE) with dummy card.
+                        #Dealer turn - Dealer hits until total >= 17
                         while True:
                             msg = recv_exact(tcp, 9)
                             res, rank, suit = unpack_payload_server(msg)
@@ -169,7 +173,7 @@ def play_session(server_ip: str, tcp_port: int, num_rounds: int):
                                 dealer_ranks.append(rank)
                                 print(f"Dealer got/revealed: rank={rank}, suit={suit} | dealer_total={hand_value(dealer_ranks)}")
                                 continue
-
+                            # Handle round result (Win/Loss/Tie)
                             print(f"Final dealer total = {hand_value(dealer_ranks)}")
                             print("Round finished:", result_text(res))
                             if res == RES_WIN:
@@ -181,7 +185,7 @@ def play_session(server_ip: str, tcp_port: int, num_rounds: int):
                             break
 
                         break
-
+            # Print session statistics and return to offer listening
             played = wins + losses + ties
             win_rate = (wins / played) if played else 0.0
             print(f"\nFinished playing {played} rounds, win rate: {win_rate:.2%}")
@@ -190,7 +194,7 @@ def play_session(server_ip: str, tcp_port: int, num_rounds: int):
         except socket.timeout:
             print("[TCP] Timeout: no response from server. Closing session and returning to offers...")
             return
-
+    # Close connection immediately after session
     finally:
         try:
             tcp.close()
@@ -198,12 +202,14 @@ def play_session(server_ip: str, tcp_port: int, num_rounds: int):
             pass
 
 def main():
+    #Client initialization and offer discovery
     print("Client started, listening for offer requests...")
-
     PREFERRED_IP = get_preferred_ip()
     print("My preferred IP:", PREFERRED_IP)
 
+    #Listen for UDP offers on the hardcoded port 13122
     udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+    # Allows multiple clients on the same machine
     try:
         udp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     except OSError:
@@ -217,22 +223,23 @@ def main():
     udp.bind(("", OFFER_UDP_PORT))
 
     while True:
+        # Unpack and validate UDP offer from server
         try:
             data, addr = udp.recvfrom(4096)
             sender_ip = addr[0]
-
+            # Prompt user for rounds before connecting
             try:
                 tcp_port, server_name = unpack_offer(data)
 
+            # Ignore corrupted or malformed packets
             except ValueError:
                 continue
 
             print(f"Received offer from {sender_ip} (server_name={server_name}, tcp_port={tcp_port})")
-
+            #Get user input and start game session
             num_rounds = ask_rounds()
-
             play_session(sender_ip, tcp_port, num_rounds)
-
+            # Immediately return to listening for offers after session ends
             print("Back to listening for offers...\n")
 
         except KeyboardInterrupt:
