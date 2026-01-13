@@ -170,6 +170,7 @@ def play_session(server_ip: str, tcp_port: int, num_rounds: int):
             tcp.close()
         except OSError:
             pass
+
 def main():
     print("Client started, listening for offer requests...")
 
@@ -197,23 +198,13 @@ def main():
             try:
                 tcp_port, server_name = unpack_offer(data)
 
-                # ✅ לא נוגעים: נשאר אותו סינון לפי שם + IP מועדף
-                if server_name != TEAM_NAME:
-                    continue
-
-                print("DEBUG offer from:", sender_ip)
-                if sender_ip != PREFERRED_IP:
-                    continue
-
             except ValueError:
                 continue
 
             print(f"Received offer from {sender_ip} (server_name={server_name}, tcp_port={tcp_port})")
 
-            # ✅ משתמשים בפונקציה שלך
             num_rounds = ask_rounds()
 
-            # ✅ משתמשים בפונקציה שלך (כל ה-TCP בפנים, כמו שבנית)
             play_session(sender_ip, tcp_port, num_rounds)
 
             print("Back to listening for offers...\n")
